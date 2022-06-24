@@ -11,3 +11,4 @@ build/
 .idea/
 vendor
 *.jar
+.DS_Store

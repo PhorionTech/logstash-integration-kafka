@@ -228,6 +228,8 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
   config :jaas_path, :validate => :path
   # JAAS configuration settings. This allows JAAS config to be a part of the plugin configuration and allows for different JAAS configuration per each plugin config.
   config :sasl_jaas_config, :validate => :string
+  # The fully qualified name of a Sasl client callback handler class that implements the org.apache.kafka.common.security.auth.AuthenticateCallbackHandler interface.
+  config :sasl_client_callback_handler_class, :validate => :string
   # Optional path to kerberos config file. This is krb5.conf style as detailed in https://web.mit.edu/kerberos/krb5-1.12/doc/admin/conf_files/krb5_conf.html
   config :kerberos_config, :validate => :path
   # Option to add Kafka metadata like topic, message size and header key values to the event.
