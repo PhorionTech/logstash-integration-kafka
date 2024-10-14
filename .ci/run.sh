@@ -5,10 +5,10 @@ env
 
 set -ex
 
-export KAFKA_VERSION=2.3.0
+export KAFKA_VERSION=3.3.1
 ./kafka_test_setup.sh
 
-jruby -rbundler/setup -S rspec -fd
-jruby -rbundler/setup -S rspec -fd --tag integration
+bundle exec rspec -fd
+bundle exec rspec -fd --tag integration
 
 ./kafka_test_teardown.sh

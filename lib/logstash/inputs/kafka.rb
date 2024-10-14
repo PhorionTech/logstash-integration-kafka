@@ -92,7 +92,8 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
   # IP addresses for a hostname, they will all be attempted to connect to before failing the 
   # connection. If the value is `resolve_canonical_bootstrap_servers_only` each entry will be 
   # resolved and expanded into a list of canonical names.
-  config :client_dns_lookup, :validate => ["default", "use_all_dns_ips", "resolve_canonical_bootstrap_servers_only"], :default => "default"
+  # Starting from Kafka 3 `default` value for `client.dns.lookup` value has been removed. If explicitly configured it fallbacks to `use_all_dns_ips`.
+  config :client_dns_lookup, :validate => ["default", "use_all_dns_ips", "resolve_canonical_bootstrap_servers_only"], :default => "use_all_dns_ips"
   # The id string to pass to the server when making requests. The purpose of this
   # is to be able to track the source of requests beyond just ip/port by allowing
   # a logical application name to be included.
@@ -123,6 +124,11 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
   # that happens to be made up of multiple processors. Messages in a topic will be distributed to all
   # Logstash instances with the same `group_id`
   config :group_id, :validate => :string, :default => "logstash"
+  # Set a static group instance id used in static membership feature to avoid rebalancing when a
+  # consumer goes offline. If set and `consumer_threads` is greater than 1 then for each
+  # consumer crated by each thread an artificial suffix is appended to the user provided `group_instance_id`
+  # to avoid clashing.
+  config :group_instance_id, :validate => :string
   # The expected time between heartbeats to the consumer coordinator. Heartbeats are used to ensure 
   # that the consumer's session stays active and to facilitate rebalancing when new
   # consumers join or leave the group. The value must be set lower than
@@ -135,7 +141,7 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
   # been aborted. Non-transactional messages will be returned unconditionally in either mode.
   config :isolation_level, :validate => ["read_uncommitted", "read_committed"], :default => "read_uncommitted" # Kafka default
   # Java Class used to deserialize the record's key
-  config :key_deserializer_class, :validate => :string, :default => "org.apache.kafka.common.serialization.StringDeserializer"
+  config :key_deserializer_class, :validate => :string, :default => DEFAULT_DESERIALIZER_CLASS
   # The maximum delay between invocations of poll() when using consumer group management. This places 
   # an upper bound on the amount of time that the consumer can be idle before fetching more records. 
   # If poll() is not called before expiration of this timeout, then the consumer is considered failed and 
@@ -202,6 +208,8 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
   config :ssl_endpoint_identification_algorithm, :validate => :string, :default => 'https'
   # Security protocol to use, which can be either of PLAINTEXT,SSL,SASL_PLAINTEXT,SASL_SSL
   config :security_protocol, :validate => ["PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"], :default => "PLAINTEXT"
+  # SASL client callback handler class
+  config :sasl_client_callback_handler_class, :validate => :string
   # http://kafka.apache.org/documentation.html#security_sasl[SASL mechanism] used for client connections. 
   # This may be any mechanism for which a security provider is available.
   # GSSAPI is the default mechanism.
@@ -242,6 +250,12 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
   #   `timestamp`: The timestamp of this message
   # While with `extended` it adds also all the key values present in the Kafka header if the key is valid UTF-8 else
   # silently skip it.
+  #
+  # Controls whether a kafka topic is automatically created when subscribing to a non-existent topic.
+  # A topic will be auto-created only if this configuration is set to `true` and auto-topic creation is enabled on the broker using `auto.create.topics.enable`; 
+  # otherwise auto-topic creation is not permitted.
+  config :auto_create_topics, :validate => :boolean, :default => true
+
   config :decorate_events, :validate => %w(none basic extended false true), :default => "none"
 
   attr_reader :metadata_mode
@@ -259,6 +273,7 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
   def register
     @runner_threads = []
     @metadata_mode = extract_metadata_level(@decorate_events)
+    reassign_dns_lookup
     @pattern ||= java.util.regex.Pattern.compile(@topics_pattern) unless @topics_pattern.nil?
     check_schema_registry_parameters
   end
@@ -287,7 +302,10 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
 
   public
   def run(logstash_queue)
-    @runner_consumers = consumer_threads.times.map { |i| subscribe(create_consumer("#{client_id}-#{i}")) }
+    @runner_consumers = consumer_threads.times.map do |i|
+      thread_group_instance_id = consumer_threads > 1 && group_instance_id ? "#{group_instance_id}-#{i}" : group_instance_id
+      subscribe(create_consumer("#{client_id}-#{i}", thread_group_instance_id))
+    end
     @runner_threads = @runner_consumers.map.with_index { |consumer, i| thread_runner(logstash_queue, consumer,
                                                                                      "kafka-input-worker-#{client_id}-#{i}") }
     @runner_threads.each(&:start)
@@ -331,9 +349,12 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
   def do_poll(consumer)
     records = []
     begin
-      records = consumer.poll(poll_timeout_ms)
+      records = consumer.poll(java.time.Duration.ofMillis(poll_timeout_ms))
     rescue org.apache.kafka.common.errors.WakeupException => e
       logger.debug("Wake up from poll", :kafka_error_message => e)
+      raise e unless stop?
+    rescue org.apache.kafka.common.errors.FencedInstanceIdException => e
+      logger.error("Another consumer with same group.instance.id has connected", :original_error_message => e.message)
       raise e unless stop?
     rescue => e
       logger.error("Unable to poll Kafka consumer",
@@ -345,7 +366,8 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
   end
 
   def handle_record(record, codec_instance, queue)
-    codec_instance.decode(record.value.to_s) do |event|
+    # use + since .to_s on nil/boolean returns a frozen string since ruby 2.7
+    codec_instance.decode(+record.value.to_s) do |event|
       decorate(event)
       maybe_set_metadata(event, record)
       queue << event
@@ -362,7 +384,9 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
       event.set("[@metadata][kafka][timestamp]", record.timestamp)
     end
     if @metadata_mode.include?(:headers)
-      record.headers.each do |header|
+      record.headers
+            .select{|h| header_with_value(h) }
+            .each do |header|
         s = String.from_java_bytes(header.value)
         s.force_encoding(Encoding::UTF_8)
         if s.valid_encoding?
@@ -389,13 +413,14 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
   end
 
   private
-  def create_consumer(client_id)
+  def create_consumer(client_id, group_instance_id)
     begin
       props = java.util.Properties.new
       kafka = org.apache.kafka.clients.consumer.ConsumerConfig
 
       props.put(kafka::AUTO_COMMIT_INTERVAL_MS_CONFIG, auto_commit_interval_ms.to_s) unless auto_commit_interval_ms.nil?
       props.put(kafka::AUTO_OFFSET_RESET_CONFIG, auto_offset_reset) unless auto_offset_reset.nil?
+      props.put(kafka::ALLOW_AUTO_CREATE_TOPICS_CONFIG, auto_create_topics) unless auto_create_topics.nil?
       props.put(kafka::BOOTSTRAP_SERVERS_CONFIG, bootstrap_servers)
       props.put(kafka::CHECK_CRCS_CONFIG, check_crcs.to_s) unless check_crcs.nil?
       props.put(kafka::CLIENT_DNS_LOOKUP_CONFIG, client_dns_lookup)
@@ -407,6 +432,7 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
       props.put(kafka::FETCH_MAX_WAIT_MS_CONFIG, fetch_max_wait_ms.to_s) unless fetch_max_wait_ms.nil?
       props.put(kafka::FETCH_MIN_BYTES_CONFIG, fetch_min_bytes.to_s) unless fetch_min_bytes.nil?
       props.put(kafka::GROUP_ID_CONFIG, group_id)
+      props.put(kafka::GROUP_INSTANCE_ID_CONFIG, group_instance_id) unless group_instance_id.nil?
       props.put(kafka::HEARTBEAT_INTERVAL_MS_CONFIG, heartbeat_interval_ms.to_s) unless heartbeat_interval_ms.nil?
       props.put(kafka::ISOLATION_LEVEL_CONFIG, isolation_level)
       props.put(kafka::KEY_DESERIALIZER_CLASS_CONFIG, key_deserializer_class)
@@ -448,6 +474,17 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
         set_trustore_keystore_config(props)
         set_sasl_config(props)
       end
+      if schema_registry_ssl_truststore_location
+        props.put('schema.registry.ssl.truststore.location', schema_registry_ssl_truststore_location)
+        props.put('schema.registry.ssl.truststore.password', schema_registry_ssl_truststore_password.value)
+        props.put('schema.registry.ssl.truststore.type', schema_registry_ssl_truststore_type)
+      end
+
+      if schema_registry_ssl_keystore_location
+        props.put('schema.registry.ssl.keystore.location', schema_registry_ssl_keystore_location)
+        props.put('schema.registry.ssl.keystore.password', schema_registry_ssl_keystore_password.value)
+        props.put('schema.registry.ssl.keystore.type', schema_registry_ssl_keystore_type)
+      end
 
       org.apache.kafka.clients.consumer.KafkaConsumer.new(props)
     rescue => e
@@ -474,6 +511,10 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
       end
       partition_assignment_strategy # assume a fully qualified class-name
     end
+  end
+
+  def header_with_value(header)
+    !header.nil? && !header.value.nil? && !header.key.nil?
   end
 
 end #class LogStash::Inputs::Kafka

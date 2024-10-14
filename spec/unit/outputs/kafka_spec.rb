@@ -22,6 +22,14 @@ describe "outputs/kafka" do
       expect(kafka.topic_id).to eql 'test'
       expect(kafka.key_serializer).to eql 'org.apache.kafka.common.serialization.StringSerializer'
     end
+
+    it 'should fallback `client_dns_lookup` to `use_all_dns_ips` when the deprecated `default` is specified' do
+      simple_kafka_config["client_dns_lookup"] = 'default'
+      kafka = LogStash::Outputs::Kafka.new(simple_kafka_config)
+      kafka.register
+
+      expect(kafka.client_dns_lookup).to eq('use_all_dns_ips')
+    end
   end
 
   context 'when outputting messages' do
@@ -48,6 +56,16 @@ describe "outputs/kafka" do
           with("test", "172.0.0.1", event.to_s).and_call_original
       expect_any_instance_of(org.apache.kafka.clients.producer.KafkaProducer).to receive(:send)
       kafka = LogStash::Outputs::Kafka.new(simple_kafka_config.merge({"message_key" => "%{host}"}))
+      kafka.register
+      kafka.multi_receive([event])
+    end
+
+    it 'should support field referenced message_headers' do
+      expect(org.apache.kafka.clients.producer.ProducerRecord).to receive(:new).
+          with("test", event.to_s).and_call_original
+      expect_any_instance_of(org.apache.kafka.clients.producer.KafkaProducer).to receive(:send)
+      expect_any_instance_of(org.apache.kafka.common.header.internals.RecordHeaders).to receive(:add).with("host","172.0.0.1".to_java_bytes).and_call_original
+      kafka = LogStash::Outputs::Kafka.new(simple_kafka_config.merge({"message_headers" => { "host" => "%{host}"}}))
       kafka.register
       kafka.multi_receive([event])
     end
@@ -211,6 +229,26 @@ describe "outputs/kafka" do
         expect(kafka).to receive(:sleep).exactly(retries).times
         kafka.register
         kafka.multi_receive([event])
+      end
+    end
+    context 'when retries is -1' do
+      let(:retries) { -1 }
+
+      it "should raise a Configuration error" do
+        kafka = LogStash::Outputs::Kafka.new(simple_kafka_config.merge("retries" => retries))
+        expect { kafka.register }.to raise_error(LogStash::ConfigurationError)
+      end
+    end
+  end
+
+  describe "value_serializer" do
+    let(:output) { LogStash::Plugin.lookup("output", "kafka").new(config) }
+
+    context "when a random string is set" do
+      let(:config) { { "topic_id" => "random", "value_serializer" => "test_string" } }
+
+      it "raises a ConfigurationError" do
+        expect { output.register }.to raise_error(LogStash::ConfigurationError)
       end
     end
   end

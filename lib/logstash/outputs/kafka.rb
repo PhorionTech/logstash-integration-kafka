@@ -86,11 +86,12 @@ class LogStash::Outputs::Kafka < LogStash::Outputs::Base
   # IP addresses for a hostname, they will all be attempted to connect to before failing the 
   # connection. If the value is `resolve_canonical_bootstrap_servers_only` each entry will be 
   # resolved and expanded into a list of canonical names.
-  config :client_dns_lookup, :validate => ["default", "use_all_dns_ips", "resolve_canonical_bootstrap_servers_only"], :default => "default"
+  # Starting from Kafka 3 `default` value for `client.dns.lookup` value has been removed. If explicitly configured it fallbacks to `use_all_dns_ips`.
+  config :client_dns_lookup, :validate => ["default", "use_all_dns_ips", "resolve_canonical_bootstrap_servers_only"], :default => "use_all_dns_ips"
   # The id string to pass to the server when making requests.
   # The purpose of this is to be able to track the source of requests beyond just
   # ip/port by allowing a logical application name to be included with the request
-  config :client_id, :validate => :string
+  config :client_id, :validate => :string, :default => "logstash" 
   # Serializer class for the key of the message
   config :key_serializer, :validate => :string, :default => 'org.apache.kafka.common.serialization.StringSerializer'
   # The producer groups together any records that arrive in between request
@@ -105,6 +106,8 @@ class LogStash::Outputs::Kafka < LogStash::Outputs::Base
   config :max_request_size, :validate => :number, :default => 1_048_576 # (1MB) Kafka default
   # The key for the message
   config :message_key, :validate => :string
+  # Headers added to kafka message in the form of key-value pairs
+  config :message_headers, :validate => :hash, :default => {}
   # the timeout setting for initial metadata request to fetch topic metadata.
   config :metadata_fetch_timeout_ms, :validate => :number, :default => 60_000
   # Partitioner to use - can be `default`, `uniform_sticky`, `round_robin` or a fully qualified class name of a custom partitioner.
@@ -144,6 +147,8 @@ class LogStash::Outputs::Kafka < LogStash::Outputs::Base
   config :ssl_endpoint_identification_algorithm, :validate => :string, :default => 'https'
   # Security protocol to use, which can be either of PLAINTEXT,SSL,SASL_PLAINTEXT,SASL_SSL
   config :security_protocol, :validate => ["PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"], :default => "PLAINTEXT"
+  # SASL client callback handler class
+  config :sasl_client_callback_handler_class, :validate => :string
   # http://kafka.apache.org/documentation.html#security_sasl[SASL mechanism] used for client connections. 
   # This may be any mechanism for which a security provider is available.
   # GSSAPI is the default mechanism.
@@ -184,14 +189,14 @@ class LogStash::Outputs::Kafka < LogStash::Outputs::Base
 
     if !@retries.nil? 
       if @retries < 0
-        raise ConfigurationError, "A negative retry count (#{@retries}) is not valid. Must be a value >= 0"
+        raise LogStash::ConfigurationError, "A negative retry count (#{@retries}) is not valid. Must be a value >= 0"
       end
 
       logger.warn("Kafka output is configured with finite retry. This instructs Logstash to LOSE DATA after a set number of send attempts fails. If you do not want to lose data if Kafka is down, then you must remove the retry setting.", :retries => @retries)
     end
 
+    reassign_dns_lookup
 
-    @producer = create_producer
     if value_serializer == 'org.apache.kafka.common.serialization.StringSerializer'
       @codec.on_event do |event, data|
         write_to_kafka(event, data)
@@ -201,8 +206,14 @@ class LogStash::Outputs::Kafka < LogStash::Outputs::Base
         write_to_kafka(event, data.to_java_bytes)
       end
     else
-      raise ConfigurationError, "'value_serializer' only supports org.apache.kafka.common.serialization.ByteArraySerializer and org.apache.kafka.common.serialization.StringSerializer" 
+      raise LogStash::ConfigurationError, "'value_serializer' only supports org.apache.kafka.common.serialization.ByteArraySerializer and org.apache.kafka.common.serialization.StringSerializer"
     end
+    @message_headers.each do |key, value|
+      if !key.is_a? String
+        raise LogStash::ConfigurationError, "'message_headers' contains a key that is not a string!"
+      end
+    end
+    @producer = create_producer
   end
 
   def prepare(record)
@@ -312,6 +323,9 @@ class LogStash::Outputs::Kafka < LogStash::Outputs::Base
       record = ProducerRecord.new(event.sprintf(@topic_id), serialized_data)
     else
       record = ProducerRecord.new(event.sprintf(@topic_id), event.sprintf(@message_key), serialized_data)
+    end
+    @message_headers.each do |key, value|
+      record.headers().add(key, event.sprintf(value).to_java_bytes)
     end
     prepare(record)
   rescue LogStash::ShutdownSignal

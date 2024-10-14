@@ -83,6 +83,16 @@ describe LogStash::Inputs::Kafka do
     it "should register" do
       expect { subject.register }.to_not raise_error
     end
+
+    context "when the deprecated `default` is specified" do
+      let(:config) { common_config.merge('client_dns_lookup' => 'default') }
+
+      it 'should fallback `client_dns_lookup` to `use_all_dns_ips`' do
+        subject.register
+
+        expect(subject.client_dns_lookup).to eq('use_all_dns_ips')
+      end
+    end
   end
 
   describe '#running' do
@@ -123,6 +133,21 @@ describe LogStash::Inputs::Kafka do
 
       it 'should set the consumer thread name' do
         expect(subject.instance_variable_get('@runner_threads').first.get_name).to eq("kafka-input-worker-test-0")
+      end
+
+      context 'with records value frozen' do
+        # boolean, module name & nil .to_s are frozen by default (https://bugs.ruby-lang.org/issues/16150)
+        let(:payload) do [
+          org.apache.kafka.clients.consumer.ConsumerRecord.new("logstash", 0, 0, "nil", nil),
+          org.apache.kafka.clients.consumer.ConsumerRecord.new("logstash", 0, 0, "true", true),
+          org.apache.kafka.clients.consumer.ConsumerRecord.new("logstash", 0, 0, "false", false),
+          org.apache.kafka.clients.consumer.ConsumerRecord.new("logstash", 0, 0, "frozen", "".freeze)
+        ]
+        end
+
+        it "should process events" do
+          expect(q.size).to eq(4)
+        end
       end
     end
 
@@ -277,6 +302,19 @@ describe LogStash::Inputs::Kafka do
       subject.register
       expect(subject.metadata_mode).to include(:record_props)
     end
+
+    context "guards against nil header" do
+      let(:header) { double(:value => nil, :key => "k") }
+      let(:headers) { [ header ] }
+      let(:record) { double(:headers => headers, :topic => "topic", :partition => 0,
+                            :offset => 123456789, :key => "someId", :timestamp => nil ) }
+
+      it "does not raise error when key is nil" do
+        subject.register
+        evt = LogStash::Event.new('message' => 'Hello')
+        expect { subject.maybe_set_metadata(evt, record) }.not_to raise_error
+      end
+    end
   end
 
   context 'with client_rack' do
@@ -287,7 +325,7 @@ describe LogStash::Inputs::Kafka do
           to receive(:new).with(hash_including('client.rack' => 'EU-R1')).
               and_return kafka_client = double('kafka-consumer')
 
-      expect( subject.send(:create_consumer, 'sample_client-0') ).to be kafka_client
+      expect( subject.send(:create_consumer, 'sample_client-0', 'group_instance_id') ).to be kafka_client
     end
   end
 
@@ -299,7 +337,7 @@ describe LogStash::Inputs::Kafka do
           to receive(:new).with(hash_including('session.timeout.ms' => '25000', 'max.poll.interval.ms' => '345000')).
               and_return kafka_client = double('kafka-consumer')
 
-      expect( subject.send(:create_consumer, 'sample_client-1') ).to be kafka_client
+      expect( subject.send(:create_consumer, 'sample_client-1', 'group_instance_id') ).to be kafka_client
     end
   end
 
@@ -311,7 +349,7 @@ describe LogStash::Inputs::Kafka do
           to receive(:new).with(hash_including('session.timeout.ms' => '25200', 'max.poll.interval.ms' => '123000')).
               and_return kafka_client = double('kafka-consumer')
 
-      expect( subject.send(:create_consumer, 'sample_client-2') ).to be kafka_client
+      expect( subject.send(:create_consumer, 'sample_client-2', 'group_instance_id') ).to be kafka_client
     end
   end
 
@@ -323,7 +361,7 @@ describe LogStash::Inputs::Kafka do
           to receive(:new).with(hash_including('enable.auto.commit' => 'false', 'check.crcs' => 'true')).
               and_return kafka_client = double('kafka-consumer')
 
-      expect( subject.send(:create_consumer, 'sample_client-3') ).to be kafka_client
+      expect( subject.send(:create_consumer, 'sample_client-3', 'group_instance_id') ).to be kafka_client
       expect( subject.enable_auto_commit ).to be false
     end
   end
@@ -336,7 +374,7 @@ describe LogStash::Inputs::Kafka do
           to receive(:new).with(hash_including('enable.auto.commit' => 'true', 'check.crcs' => 'false')).
               and_return kafka_client = double('kafka-consumer')
 
-      expect( subject.send(:create_consumer, 'sample_client-4') ).to be kafka_client
+      expect( subject.send(:create_consumer, 'sample_client-4', 'group_instance_id') ).to be kafka_client
       expect( subject.enable_auto_commit ).to be true
     end
   end

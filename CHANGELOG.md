@@ -1,3 +1,53 @@
+## 11.5.2
+  - Update avro to 1.11.4 and confluent kafka to 7.4.7 [#184](https://github.com/logstash-plugins/logstash-integration-kafka/pull/184)
+
+## 11.5.1
+  - Specify that only headers with UTF-8 encoded values are supported in extended decoration [#174](https://github.com/logstash-plugins/logstash-integration-kafka/pull/174)
+
+## 11.5.0
+  - Add "auto_create_topics" option to allow disabling of topic auto creation [#172](https://github.com/logstash-plugins/logstash-integration-kafka/pull/172)
+
+## 11.4.2
+  - Add default client_id of logstash to kafka output [#169](https://github.com/logstash-plugins/logstash-integration-kafka/pull/169)
+
+## 11.4.1
+  - [DOC] Match anchor ID and references for `message_headers` [#164](https://github.com/logstash-plugins/logstash-integration-kafka/pull/164)
+
+## 11.4.0
+  - Add support for setting Kafka message headers in output plugin [#162](https://github.com/logstash-plugins/logstash-integration-kafka/pull/162)
+
+## 11.3.4
+  - Fix "retries" and "value_serializer" error handling in output plugin (#160) [#160](https://github.com/logstash-plugins/logstash-integration-kafka/pull/160)
+
+## 11.3.3
+  - Fix "Can't modify frozen string" error when record value is `nil` (tombstones) [#155](https://github.com/logstash-plugins/logstash-integration-kafka/pull/155)
+
+## 11.3.2
+  - Fix: update Avro library [#150](https://github.com/logstash-plugins/logstash-integration-kafka/pull/150)
+
+## 11.3.1
+  - Fix: update snappy dependency [#148](https://github.com/logstash-plugins/logstash-integration-kafka/pull/148)
+
+## 11.3.0
+  - Bump kafka client to 3.4.1 [#145](https://github.com/logstash-plugins/logstash-integration-kafka/pull/145)
+
+## 11.2.1
+ - Fix nil exception to empty headers of record during event metadata assignment [#140](https://github.com/logstash-plugins/logstash-integration-kafka/pull/140)
+
+## 11.2.0
+ - Added TLS truststore and keystore settings specifically to access the schema registry [#137](https://github.com/logstash-plugins/logstash-integration-kafka/pull/137)
+
+## 11.1.0
+ - Added config `group_instance_id` to use the Kafka's consumer static membership feature [#135](https://github.com/logstash-plugins/logstash-integration-kafka/pull/135)
+
+## 11.0.0
+  - Changed Kafka client to 3.3.1, requires Logstash >= 8.3.0. 
+  - Deprecated `default` value for setting `client_dns_lookup` forcing to `use_all_dns_ips` when explicitly used [#130](https://github.com/logstash-plugins/logstash-integration-kafka/pull/130)
+  - Changed the consumer's poll from using the one that blocks on metadata retrieval to the one that doesn't [#136](https://github.com/logstash-plugins/logstash-integration-kafka/pull/133)
+
+## 10.12.1
+  - Fix: update Avro library on 10.x [#149](https://github.com/logstash-plugins/logstash-integration-kafka/pull/149)
+
 ## 10.12.0
   - bump kafka client to 2.8.1 [#115](https://github.com/logstash-plugins/logstash-integration-kafka/pull/115)
 
@@ -6,7 +56,7 @@
   - Refactor: mixins to follow shared mixin module naming
 
 ## 10.10.1
-  - Update CHANGELOG.md [#114](https://api.github.com/repos/logstash-plugins/logstash-integration-kafka/pulls/114)
+  - Update CHANGELOG.md [#114](https://github.com/logstash-plugins/logstash-integration-kafka/pull/114)
 
 ## 10.10.0
   - Added config setting to enable 'zstd' compression in the Kafka output [#112](https://github.com/logstash-plugins/logstash-integration-kafka/pull/112)
